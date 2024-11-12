@@ -2,26 +2,22 @@ use super::message::MessageRequest;
 use super::message::MessageResponse;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::prelude::*;
 use futures::StreamExt;
-use libp2p::gossipsub::{MessageId, PublishError};
 use libp2p::request_response;
-#[allow(deprecated)]
-use libp2p::swarm::{SwarmEvent, THandlerErr};
+use libp2p::swarm::SwarmEvent;
 use libp2p::Multiaddr;
 use libp2p::PeerId;
 use libp2p::StreamProtocol;
 use libp2p::Swarm;
-use libp2p::{gossipsub, mdns, swarm::NetworkBehaviour};
+use libp2p::{mdns, swarm::NetworkBehaviour};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
 use serde::Serialize;
-use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::select;
 
+/// Events sent from the Swarm loop to the outside world.
 #[derive(Debug)]
 pub enum Event<I, W, R> {
     /// The local node is now listening on the given multiaddr.
@@ -41,6 +37,7 @@ pub enum Event<I, W, R> {
     },
 }
 
+/// Commands sent from the outside world to the Swarm loop.
 #[derive(Debug)]
 pub enum Command<R> {
     SendRequest {
@@ -193,10 +190,7 @@ where
     }
 
     #[allow(deprecated)] // THandlerErr
-    async fn handle_behaviour_event(
-        &mut self,
-        event: SwarmEvent<BehaviourEvent<I, W, R>, THandlerErr<Behaviour<I, W, R>>>,
-    ) {
+    async fn handle_behaviour_event(&mut self, event: SwarmEvent<BehaviourEvent<I, W, R>>) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.event_sender
