@@ -93,7 +93,6 @@ where
                     libp2p::yamux::Config::default,
                 )
                 .unwrap()
-                .with_quic()
                 .with_behaviour(|key| {
                     Ok(Behaviour {
                         mdns: mdns::tokio::Behaviour::new(
