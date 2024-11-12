@@ -6,7 +6,9 @@ use super::{
 };
 use crate::message::MessageResponse;
 use crossbeam_channel::{select, Receiver, Sender};
+use log::debug;
 use serde::{de::DeserializeOwned, Serialize};
+
 pub struct ProducerPeer<I, W, R> {
     swarm_node: SwarmNode<I, W, R>,
 
@@ -45,8 +47,11 @@ where
 
     fn handle_event(&mut self, event: Event<I, W, R>) {
         match event {
+            Event::ListeningOn { address: multiaddr } => {
+                debug!("Producer listening on: {:?}", multiaddr);
+            }
             Event::PeerConnected { peer_id } => {
-                println!("Connected to peer: {:?}", peer_id);
+                debug!("Connected to peer: {:?}", peer_id);
             }
             Event::MessageRequestReceived {
                 peer_id: _,

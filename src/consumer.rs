@@ -6,6 +6,7 @@ use crate::{
 use crossbeam_channel::{select, Sender};
 use futures::{channel::oneshot, SinkExt};
 use libp2p::PeerId;
+use log::{info, trace, warn};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -54,7 +55,7 @@ where
                 select! {
                     recv(self.swarm_node.event_receiver()) -> event => self.handle_event(event.unwrap()),
                     send(self.tx, entry) -> _ => {
-                        println!("Sent work to peer: {:?}", peer_id);
+                        trace!("Sent work entry from peer {} to channel, asking for more work...", peer_id);
 
                         self.peers.get_mut(&peer_id).unwrap().next_work = None;
                         // ask for more work
@@ -70,59 +71,69 @@ where
     fn handle_event(&mut self, event: Event<I, W, R>) {
         match event {
             Event::ListeningOn { address: multiaddr } => {
-                println!("Listening on: {:?}", multiaddr);
+                info!("Consumer listening on {}", multiaddr);
             }
             Event::PeerConnected { peer_id } => match self.peers.entry(peer_id) {
-                Entry::Occupied(_) => {}
+                Entry::Occupied(_) => {} // we already know this peer
                 Entry::Vacant(v) => {
-                    println!("Connected to peer: {:?}.", peer_id);
+                    info!("Connected to peer {}, asking for identity", peer_id);
 
-                    // add to the list of known peers
+                    // add to the map of known peers
                     v.insert(Peer::new(peer_id));
-
                     // ask for the peer's identity
-                    self.swarm_node.send(peer_id, MessageRequest::WhoAreYou);
+                    self.swarm_node
+                        .command_sender()
+                        .try_send(Command::SendRequest {
+                            peer_id,
+                            request: MessageRequest::WhoAreYou,
+                        })
+                        .expect("command to be sent");
                 }
             },
             Event::MessageRequestReceived {
-                peer_id: _,
+                peer_id,
                 message,
                 sender,
             } => match message {
                 MessageRequest::WhoAreYou => {
+                    info!("Received a request for identity from peer {}.", peer_id);
                     sender.send(MessageResponse::MeConsumer).ok();
                 }
-                MessageRequest::RequestWork => {
-                    println!("Received invalid request for work");
-                }
-                MessageRequest::RespondWork(work_result) => {
-                    println!("Received invalid work ack");
+                request => {
+                    warn!("Unexpected request from peer {}: {:?}", peer_id, request);
                 }
             },
             Event::MessageResponseReceived { peer_id, message } => match message {
+                MessageResponse::MeConsumer => {
+                    info!("Peer {} is a consumer", peer_id);
+                }
                 MessageResponse::MeProducer(init) => {
-                    println!("Received init from peer: {:?}", peer_id);
+                    info!("Peer {} is a producer! Requesting work...", peer_id);
 
                     // save the initialization data
                     self.peers.get_mut(&peer_id).expect("peer to exist").init = Some(init);
-
                     // request work
-                    self.swarm_node.send(peer_id, MessageRequest::RequestWork);
+                    self.swarm_node
+                        .command_sender()
+                        .try_send(Command::SendRequest {
+                            peer_id,
+                            request: MessageRequest::RequestWork,
+                        })
+                        .expect("command to be sent");
                 }
-                MessageResponse::MeConsumer => {
-                    println!("Peer {:?} is a consumer", peer_id);
+                MessageResponse::NoWorkAvailable => {
+                    todo!()
                 }
                 MessageResponse::SomeWork(work_definition) => {
+                    trace!("Received work from peer {}", peer_id);
+
                     self.peers
                         .get_mut(&peer_id)
                         .expect("peer to exist")
                         .next_work = Some(work_definition);
                 }
                 MessageResponse::Acknowledge => {
-                    println!("Received work ACK!");
-                }
-                _ => {
-                    println!("Received unexpected response");
+                    trace!("An acknowledgment was received from peer {}", peer_id);
                 }
             },
         }
@@ -137,6 +148,8 @@ where
         tokio::spawn(async move {
             match receiver.await {
                 Ok(result) => {
+                    trace!("Received work result for peer {}", peer_id);
+
                     cmd_sender
                         .send(Command::SendRequest {
                             peer_id,

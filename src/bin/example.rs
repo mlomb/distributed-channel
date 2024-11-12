@@ -3,6 +3,7 @@ use distributed_channel::{
     consumer::{ConsumerPeer, WorkEntry},
     producer::ProducerPeer,
 };
+use log::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -25,6 +26,10 @@ const CHANNEL_SIZE: usize = 1;
 
 #[tokio::main]
 async fn main() {
+    env_logger::Builder::new()
+        .filter_module("distributed_channel", LevelFilter::Trace)
+        .init();
+
     let init = Init { id: 123 };
 
     if std::env::args().nth(1).unwrap() == "consumer" {
