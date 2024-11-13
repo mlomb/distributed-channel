@@ -1,8 +1,4 @@
-use crossbeam_channel::select;
-use distributed_channel::{
-    consumer::{ConsumerPeer, WorkEntry},
-    producer::ProducerPeer,
-};
+use distributed_channel::node::NodeSetup;
 use log::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -24,8 +20,7 @@ pub struct WorkResult {
 
 const CHANNEL_SIZE: usize = 1;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     env_logger::Builder::new()
         .filter_module("distributed_channel", LevelFilter::Trace)
         .init();
@@ -33,13 +28,60 @@ async fn main() {
     let init = Init { id: 123 };
 
     if std::env::args().nth(1).unwrap() == "consumer" {
+        let (s, mut r) = tokio::sync::mpsc::channel(CHANNEL_SIZE);
+
+        let _node = NodeSetup::default().into_consumer::<Init, WorkDefinition, WorkResult>(s);
+
+        let mut i = 0;
+        while let Some(work) = r.blocking_recv() {
+            println!("PROCESSING WORK: {:?}", work.work_definition);
+            println!("i = {}", i);
+            i += 1;
+
+            std::thread::sleep(std::time::Duration::from_secs(1));
+
+            work.sender
+                .send(WorkResult {
+                    id: work.work_definition.id,
+                })
+                .unwrap();
+
+            if i == 5 {
+                break;
+            }
+        }
+    } else {
+        let (s, r) = crossbeam_channel::bounded::<WorkDefinition>(CHANNEL_SIZE);
+        let (u, v) = crossbeam_channel::bounded::<WorkResult>(1);
+
+        let _node =
+            NodeSetup::default().into_producer::<Init, WorkDefinition, WorkResult>(init, r, u);
+
+        let mut id = 0;
+        loop {
+            crossbeam_channel::select! {
+                recv(v) -> res => {
+                    let res = res.unwrap();
+                    println!("PRODUCER Received: {:?}", res);
+                },
+                send(s, WorkDefinition { id }) -> res => {
+                    let res = res.unwrap();
+                    println!("PRODUCER Sent: {:?}", id);
+                    id += 1;
+                },
+            }
+        }
+    }
+
+    println!("EXITED");
+
+    /*
+    let init = Init { id: 123 };
+
+    if std::env::args().nth(1).unwrap() == "consumer" {
         let (s, r) = crossbeam_channel::bounded(CHANNEL_SIZE);
 
-        tokio::spawn(async move {
-            ConsumerPeer::<Init, WorkDefinition, WorkResult>::new(s)
-                .run()
-                .await;
-        });
+        let consumer = ConsumerPeer::<Init, WorkDefinition, WorkResult>::new(s);
 
         while let Ok(work) = r.recv() {
             println!("PROCESSING WORK: {:?}", work.work_definition);
@@ -67,10 +109,11 @@ async fn main() {
                 },
                 send(s, WorkDefinition { id }) -> res => {
                     let res = res.unwrap();
-                    println!("PRODUCER Sent: {:?}", res);
+                    println!("PRODUCER Sent: {:?}", id);
                     id += 1;
                 },
             }
         }
     }
+    */
 }

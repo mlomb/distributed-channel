@@ -1,8 +1,9 @@
 use super::message::MessageRequest;
 use super::message::MessageResponse;
-use futures::channel::mpsc;
+use crate::node::NodeSetup;
 use futures::channel::oneshot;
 use futures::StreamExt;
+use libp2p::identity::Keypair;
 use libp2p::request_response;
 use libp2p::swarm::SwarmEvent;
 use libp2p::Multiaddr;
@@ -14,8 +15,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt;
 use std::time::Duration;
-use tokio::runtime::Runtime;
 use tokio::select;
+
+pub type CommandRx<R> = tokio::sync::mpsc::Receiver<Command<R>>;
+pub type CommandTx<R> = tokio::sync::mpsc::Sender<Command<R>>;
+
+pub type EventTx<I, W, R> = tokio::sync::mpsc::Sender<Event<I, W, R>>;
+pub type EventRx<I, W, R> = tokio::sync::mpsc::Receiver<Event<I, W, R>>;
 
 /// Events sent from the Swarm loop to the outside world.
 #[derive(Debug)]
@@ -58,103 +64,7 @@ where
     request_response: request_response::cbor::Behaviour<MessageRequest<R>, MessageResponse<I, W>>,
 }
 
-/// A node in a libp2p Swarm. It allows sending and receiving network messages.
-pub struct SwarmNode<I, W, R> {
-    /// The Tokio runtime in which the Swarm loop is running
-    #[allow(dead_code)]
-    runtime: Runtime,
-
-    /// Sender for commands to the Swarm loop
-    command_sender: mpsc::Sender<Command<R>>,
-
-    /// Receiver for events from the Swarm loop
-    event_receiver: crossbeam_channel::Receiver<Event<I, W, R>>,
-}
-
-impl<I, W, R> SwarmNode<I, W, R>
-where
-    I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-{
-    /// Spins up a new node in the network.
-    /// Initializes a Tokio runtime with the event loop in it.
-    pub fn new() -> Self {
-        let runtime = Runtime::new().unwrap();
-        let (command_sender, command_receiver) = mpsc::channel(0);
-        let (event_sender, event_receiver) = crossbeam_channel::bounded(1);
-
-        runtime.spawn(async move {
-            let mut swarm = libp2p::SwarmBuilder::with_new_identity()
-                .with_tokio()
-                .with_tcp(
-                    libp2p::tcp::Config::default(),
-                    libp2p::noise::Config::new,
-                    libp2p::yamux::Config::default,
-                )
-                .unwrap()
-                .with_behaviour(|key| {
-                    Ok(Behaviour {
-                        mdns: mdns::tokio::Behaviour::new(
-                            mdns::Config::default(),
-                            key.public().to_peer_id(),
-                        )?,
-                        request_response: request_response::cbor::Behaviour::new(
-                            [(
-                                StreamProtocol::new("/mlomb/bot-tools/arena/1"),
-                                request_response::ProtocolSupport::Full,
-                            )],
-                            request_response::Config::default(),
-                        ),
-                    })
-                })
-                .unwrap()
-                .with_swarm_config(|cfg| {
-                    cfg.with_idle_connection_timeout(Duration::from_secs(u64::MAX))
-                })
-                .build();
-
-            // Listen on all interfaces and whatever port the OS assigns
-            swarm
-                .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
-                .unwrap();
-
-            let network_loop = EventLoop {
-                swarm,
-                command_receiver,
-                event_sender,
-            };
-            network_loop.run().await;
-        });
-
-        SwarmNode {
-            runtime,
-            command_sender,
-            event_receiver,
-        }
-    }
-
-    pub fn event_receiver(&self) -> &crossbeam_channel::Receiver<Event<I, W, R>> {
-        &self.event_receiver
-    }
-
-    pub fn command_sender(&self) -> mpsc::Sender<Command<R>> {
-        self.command_sender.clone()
-    }
-
-    pub fn next(&mut self) -> Event<I, W, R> {
-        self.event_receiver.recv().unwrap()
-    }
-
-    pub fn send(&self, peer_id: PeerId, request: MessageRequest<R>) {
-        self.command_sender
-            .clone()
-            .try_send(Command::SendRequest { peer_id, request })
-            .unwrap();
-    }
-}
-
-pub struct EventLoop<I, W, R>
+pub struct SwarmLoop<I, W, R>
 where
     I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
     W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
@@ -164,36 +74,82 @@ where
     swarm: Swarm<Behaviour<I, W, R>>,
 
     /// Receiver for commands from the outside world
-    command_receiver: mpsc::Receiver<Command<R>>,
+    command_receiver: CommandRx<R>,
 
     /// Sender for events to the outside world
-    event_sender: crossbeam_channel::Sender<Event<I, W, R>>,
+    event_sender: EventTx<I, W, R>,
 }
 
-impl<I, W, R> EventLoop<I, W, R>
+impl<I, W, R> SwarmLoop<I, W, R>
 where
     I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
     W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
     R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
 {
-    pub async fn run(mut self) {
+    pub async fn start_loop(
+        node_setup: NodeSetup,
+        command_receiver: CommandRx<R>,
+        event_sender: EventTx<I, W, R>,
+    ) {
+        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                libp2p::tcp::Config::default(),
+                libp2p::noise::Config::new,
+                libp2p::yamux::Config::default,
+            )
+            .unwrap()
+            .with_behaviour(move |key: &Keypair| {
+                Ok(Behaviour {
+                    mdns: mdns::tokio::Behaviour::new(
+                        mdns::Config::default(),
+                        key.public().to_peer_id(),
+                    )?,
+                    request_response: request_response::cbor::Behaviour::new(
+                        [(
+                            StreamProtocol::try_from_owned(node_setup.protocol)
+                                .expect("a valid protocol"),
+                            request_response::ProtocolSupport::Full,
+                        )],
+                        request_response::Config::default(),
+                    ),
+                })
+            })
+            .unwrap()
+            .with_swarm_config(|cfg| {
+                cfg.with_idle_connection_timeout(Duration::from_secs(u64::MAX))
+            })
+            .build();
+
+        // Listen on all interfaces and whatever port the OS assigns
+        swarm
+            .listen_on(node_setup.listen_address.parse().expect("a valid address"))
+            .expect("listen to succeed");
+
+        Self {
+            swarm,
+            command_receiver,
+            event_sender,
+        }
+        .run_loop()
+        .await
+    }
+
+    pub async fn run_loop(mut self) {
         loop {
-            select! {
-                event = self.swarm.select_next_some() => self.handle_behaviour_event(event).await,
-                command = self.command_receiver.next() => match command {
-                    Some(command) => self.handle_command(command),
-                    None => break,
-                }
+            tokio::select! {
+                Some(event) = self.swarm.next() => self.handle_behaviour_event(event).await,
+                Some(command) = self.command_receiver.recv() => self.handle_command(command),
             }
         }
     }
 
-    #[allow(deprecated)] // THandlerErr
     async fn handle_behaviour_event(&mut self, event: SwarmEvent<BehaviourEvent<I, W, R>>) {
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.event_sender
                     .send(Event::ListeningOn { address })
+                    .await
                     .unwrap();
             }
             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
@@ -204,6 +160,7 @@ where
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 self.event_sender
                     .send(Event::PeerConnected { peer_id })
+                    .await
                     .unwrap();
             }
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
@@ -220,6 +177,7 @@ where
                                 message: request,
                                 sender,
                             })
+                            .await
                             .unwrap();
                         let response = receiver.await.unwrap();
                         self.swarm
@@ -237,6 +195,7 @@ where
                                 peer_id: peer,
                                 message: response,
                             })
+                            .await
                             .unwrap();
                     }
                 },

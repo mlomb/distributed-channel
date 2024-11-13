@@ -1,9 +1,9 @@
-use super::swarm::{Event, SwarmNode};
+use super::swarm::Event;
 use crate::{
     message::{MessageRequest, MessageResponse},
-    swarm::Command,
+    swarm::{Command, CommandTx, EventRx},
 };
-use crossbeam_channel::{select, Sender};
+use crossbeam_channel::select;
 use futures::{channel::oneshot, SinkExt};
 use libp2p::PeerId;
 use log::{info, trace, warn};
@@ -18,29 +18,36 @@ pub struct WorkEntry<W, R> {
     pub sender: oneshot::Sender<R>,
 }
 
-pub struct ConsumerPeer<I, W, R> {
-    swarm_node: SwarmNode<I, W, R>,
-
+pub struct ConsumerNode<I, W, R> {
     peers: HashMap<PeerId, Peer<I, W>>,
 
-    tx: Sender<WorkEntry<W, R>>,
+    tx: tokio::sync::mpsc::Sender<WorkEntry<W, R>>,
+    command_sender: CommandTx<R>,
+    event_receiver: EventRx<I, W, R>,
 }
 
-impl<I, W, R> ConsumerPeer<I, W, R>
+impl<I, W, R> ConsumerNode<I, W, R>
 where
     I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
     W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
     R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
 {
-    pub fn new(tx: Sender<WorkEntry<W, R>>) -> Self {
-        ConsumerPeer {
-            swarm_node: SwarmNode::new(),
+    pub async fn start_loop(
+        command_sender: CommandTx<R>,
+        event_receiver: EventRx<I, W, R>,
+        tx: tokio::sync::mpsc::Sender<WorkEntry<W, R>>,
+    ) {
+        Self {
             peers: HashMap::new(),
             tx,
+            command_sender,
+            event_receiver,
         }
+        .run_loop()
+        .await
     }
 
-    pub async fn run(mut self) {
+    pub async fn run_loop(mut self) {
         loop {
             let next_peer_with_work = self
                 .peers
@@ -52,23 +59,29 @@ where
             if let Some((peer_id, next_work)) = next_peer_with_work {
                 let entry = self.build_entry(peer_id, next_work);
 
-                select! {
-                    recv(self.swarm_node.event_receiver()) -> event => self.handle_event(event.unwrap()),
-                    send(self.tx, entry) -> _ => {
+                tokio::select! {
+                    event = self.event_receiver.recv() => {
+                        self.handle_event(event.unwrap()).await;
+                    },
+                    _ = self.tx.send(entry) => {
                         trace!("Sent work entry from peer {} to channel, asking for more work...", peer_id);
 
                         self.peers.get_mut(&peer_id).unwrap().next_work = None;
                         // ask for more work
-                        self.swarm_node.send(peer_id, MessageRequest::RequestWork);
+                        self.command_sender.send(Command::SendRequest {
+                            peer_id,
+                            request: MessageRequest::RequestWork,
+                        }).await.unwrap();
                     },
                 };
             } else {
-                self.handle_event(self.swarm_node.event_receiver().recv().unwrap());
+                let evt = self.event_receiver.recv().await.unwrap();
+                self.handle_event(evt).await;
             }
         }
     }
 
-    fn handle_event(&mut self, event: Event<I, W, R>) {
+    async fn handle_event(&mut self, event: Event<I, W, R>) {
         match event {
             Event::ListeningOn { address: multiaddr } => {
                 info!("Consumer listening on {}", multiaddr);
@@ -81,13 +94,13 @@ where
                     // add to the map of known peers
                     v.insert(Peer::new(peer_id));
                     // ask for the peer's identity
-                    self.swarm_node
-                        .command_sender()
-                        .try_send(Command::SendRequest {
+                    self.command_sender
+                        .send(Command::SendRequest {
                             peer_id,
                             request: MessageRequest::WhoAreYou,
                         })
-                        .expect("command to be sent");
+                        .await
+                        .unwrap();
                 }
             },
             Event::MessageRequestReceived {
@@ -97,7 +110,7 @@ where
             } => match message {
                 MessageRequest::WhoAreYou => {
                     info!("Received a request for identity from peer {}.", peer_id);
-                    sender.send(MessageResponse::MeConsumer).ok();
+                    sender.send(MessageResponse::MeConsumer).unwrap();
                 }
                 request => {
                     warn!("Unexpected request from peer {}: {:?}", peer_id, request);
@@ -113,13 +126,13 @@ where
                     // save the initialization data
                     self.peers.get_mut(&peer_id).expect("peer to exist").init = Some(init);
                     // request work
-                    self.swarm_node
-                        .command_sender()
-                        .try_send(Command::SendRequest {
+                    self.command_sender
+                        .send(Command::SendRequest {
                             peer_id,
                             request: MessageRequest::RequestWork,
                         })
-                        .expect("command to be sent");
+                        .await
+                        .unwrap();
                 }
                 MessageResponse::NoWorkAvailable => {
                     todo!()
@@ -143,14 +156,14 @@ where
         let (sender, receiver) = oneshot::channel();
 
         let peer_id = peer_id.clone();
-        let mut cmd_sender = self.swarm_node.command_sender().clone();
+        let mut command_sender = self.command_sender.clone();
 
         tokio::spawn(async move {
             match receiver.await {
                 Ok(result) => {
                     trace!("Received work result for peer {}", peer_id);
 
-                    cmd_sender
+                    command_sender
                         .send(Command::SendRequest {
                             peer_id,
                             request: MessageRequest::RespondWork(result),
