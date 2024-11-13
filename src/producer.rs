@@ -1,10 +1,11 @@
 use super::{message::MessageRequest, swarm::Event};
 use crate::{
     message::MessageResponse,
-    swarm::{CommandTx, EventRx},
+    swarm::{CommandTx, EventRx, PeerHandler},
     Networked,
 };
 use crossbeam_channel::{Receiver, Sender};
+use libp2p::PeerId;
 use log::{info, trace, warn};
 
 // https://github.com/libp2p/rust-libp2p/issues/5383
@@ -99,4 +100,26 @@ where
             }
         }
     }
+}
+
+pub struct ProducerPeerHandler {}
+
+impl ProducerPeerHandler {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl<I, W, R> PeerHandler<I, W, R> for ProducerPeerHandler {
+    async fn next_request(&self) -> Option<MessageRequest<R>> {
+        None
+    }
+
+    fn handle_connection(&self, peer_id: PeerId) {}
+
+    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
+        MessageResponse::Acknowledge
+    }
+
+    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>) {}
 }

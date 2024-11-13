@@ -4,7 +4,6 @@ use crate::node::NodeSetup;
 use crate::Networked;
 use futures::channel::oneshot;
 use futures::StreamExt;
-use futures::TryFutureExt;
 use libp2p::identity::Keypair;
 use libp2p::request_response;
 use libp2p::swarm::SwarmEvent;
@@ -15,16 +14,22 @@ use libp2p::Swarm;
 use libp2p::{mdns, swarm::NetworkBehaviour};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::fmt;
-use std::future::IntoFuture;
+use std::future::Future;
 use std::time::Duration;
-use tokio::select;
 
 pub type CommandRx<R> = tokio::sync::mpsc::Receiver<Command<R>>;
 pub type CommandTx<R> = tokio::sync::mpsc::Sender<Command<R>>;
 
 pub type EventTx<I, W, R> = tokio::sync::mpsc::Sender<Event<I, W, R>>;
 pub type EventRx<I, W, R> = tokio::sync::mpsc::Receiver<Event<I, W, R>>;
+
+pub trait PeerHandler<I, W, R> {
+    fn next_request(&self) -> impl Future<Output = Option<MessageRequest<R>>>;
+
+    fn handle_connection(&self, peer_id: PeerId);
+    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W>;
+    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>);
+}
 
 /// Events sent from the Swarm loop to the outside world.
 #[derive(Debug)]
@@ -67,11 +72,12 @@ where
     request_response: request_response::cbor::Behaviour<MessageRequest<R>, MessageResponse<I, W>>,
 }
 
-pub struct SwarmLoop<I, W, R>
+pub struct SwarmLoop<I, W, R, P>
 where
     I: Networked,
     W: Networked,
     R: Networked,
+    P: PeerHandler<I, W, R>,
 {
     /// The libp2p Swarm
     swarm: Swarm<Behaviour<I, W, R>>,
@@ -81,18 +87,23 @@ where
 
     /// Sender for events to the outside world
     event_sender: EventTx<I, W, R>,
+
+    /// Peer handler
+    peer_handler: P,
 }
 
-impl<I, W, R> SwarmLoop<I, W, R>
+impl<I, W, R, P> SwarmLoop<I, W, R, P>
 where
     I: Networked,
     W: Networked,
     R: Networked,
+    P: PeerHandler<I, W, R> + Send,
 {
     pub async fn start_loop(
         node_setup: NodeSetup,
         command_receiver: CommandRx<R>,
         event_sender: EventTx<I, W, R>,
+        peer_handler: P,
     ) {
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -133,6 +144,7 @@ where
             swarm,
             command_receiver,
             event_sender,
+            peer_handler,
         }
         .run_loop()
         .await
@@ -167,6 +179,8 @@ where
                     .send(Event::PeerConnected { peer_id })
                     .await
                     .unwrap();
+
+                self.peer_handler.handle_connection(peer_id);
             }
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
                 request_response::Event::Message { peer, message } => match message {
@@ -175,6 +189,17 @@ where
                         request,
                         channel,
                     } => {
+                        let res = self.peer_handler.handle_request(peer, request.clone());
+                        if let MessageResponse::Acknowledge = res {
+                        } else {
+                            self.swarm
+                                .behaviour_mut()
+                                .request_response
+                                .send_response(channel, res)
+                                .unwrap();
+                            return;
+                        }
+
                         let (sender, receiver) = oneshot::channel();
                         self.event_sender
                             .send(Event::MessageRequestReceived {
@@ -206,6 +231,8 @@ where
                         request_id,
                         response,
                     } => {
+                        self.peer_handler.handle_response(peer, response.clone());
+
                         self.event_sender
                             .send(Event::MessageResponseReceived {
                                 peer_id: peer,

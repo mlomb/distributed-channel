@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MessageRequest<R> {
     /// A peer requests the identity of another peer.
     WhoAreYou,
@@ -13,7 +13,7 @@ pub enum MessageRequest<R> {
     RespondWork(R),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MessageResponse<I, W> {
     /// The peer is a consumer.
     MeConsumer,

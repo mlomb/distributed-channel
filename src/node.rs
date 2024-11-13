@@ -1,6 +1,6 @@
 use crate::{
-    consumer::{ConsumerNode, WorkRx},
-    producer::ProducerNode,
+    consumer::{ConsumerNode, ConsumerPeerHandler, WorkRx},
+    producer::{ProducerNode, ProducerPeerHandler},
     swarm::SwarmLoop,
     Networked,
 };
@@ -42,19 +42,22 @@ impl NodeSetup {
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(1);
         let (work_tx, work_rx) = async_channel::bounded(1);
 
-        // start network loop
-        runtime.spawn(SwarmLoop::<I, W, R>::start_loop(
-            self,
-            command_receiver,
-            event_sender,
-        ));
-
         // start consumer loop
         runtime.spawn(ConsumerNode::<I, W, R>::start_loop(
             command_sender,
             event_receiver,
-            work_tx,
+            work_tx.clone(),
         ));
+
+        // start network loop
+        runtime.spawn(
+            SwarmLoop::<I, W, R, ConsumerPeerHandler<I, W, R>>::start_loop(
+                self,
+                command_receiver,
+                event_sender,
+                ConsumerPeerHandler::new(work_tx.clone()),
+            ),
+        );
 
         (Node { runtime }, work_rx)
     }
@@ -81,10 +84,11 @@ impl NodeSetup {
         let (u, v) = crossbeam_channel::bounded::<R>(1);
 
         // start network loop
-        runtime.spawn(SwarmLoop::<I, W, R>::start_loop(
+        runtime.spawn(SwarmLoop::<I, W, R, ProducerPeerHandler>::start_loop(
             self,
             command_receiver,
             event_sender,
+            ProducerPeerHandler::new(),
         ));
 
         // start producer loop

@@ -1,7 +1,7 @@
 use super::swarm::Event;
 use crate::{
     message::{MessageRequest, MessageResponse},
-    swarm::{Command, CommandTx, EventRx},
+    swarm::{Command, CommandTx, EventRx, PeerHandler},
     Networked,
 };
 use futures::channel::oneshot;
@@ -85,6 +85,7 @@ where
     }
 
     async fn handle_event(&mut self, event: Event<I, W, R>) {
+        return;
         match event {
             Event::ListeningOn { address: multiaddr } => {
                 info!("Consumer listening on {}", multiaddr);
@@ -204,6 +205,83 @@ impl<I, W> Peer<I, W> {
             peer_id,
             init: None,
             next_work: None,
+        }
+    }
+}
+
+/// ------------------------------------------------------------------------
+/// ------------------------------------------------------------------------
+/// ------------------------------------------------------------------------
+/// ------------------------------------------------------------------------
+/// ------------------------------------------------------------------------
+
+pub struct ConsumerPeerHandler<I, W, R> {
+    // -
+    init: Option<Arc<Mutex<I>>>,
+    next_work: Option<W>,
+
+    work_tx: WorkTx<I, W, R>,
+}
+
+impl<I, W, R> ConsumerPeerHandler<I, W, R> {
+    pub fn new(work_tx: WorkTx<I, W, R>) -> Self {
+        Self {
+            init: None,
+            next_work: None,
+            work_tx,
+        }
+    }
+}
+
+impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R> {
+    async fn next_request(&self) -> Option<MessageRequest<R>> {
+        todo!()
+    }
+
+    fn handle_connection(&self, peer_id: PeerId) {
+        info!("Connected to peer {}, asking for identity", peer_id);
+    }
+
+    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
+        match request {
+            MessageRequest::WhoAreYou => {
+                info!("Received a request for identity from peer {}.", peer_id);
+                MessageResponse::MeConsumer
+            }
+            request => MessageResponse::Acknowledge,
+        }
+    }
+
+    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>) {
+        match response {
+            MessageResponse::MeConsumer => {
+                info!("Peer {} is a consumer", peer_id);
+            }
+            MessageResponse::MeProducer(init) => {
+                info!("Peer {} is a producer! Requesting work...", peer_id);
+
+                // save the initialization data
+                self.init = Some(Arc::new(Mutex::new(init)));
+                // request work
+                //self.command_sender
+                //    .send(Command::SendRequest {
+                //        peer_id,
+                //        request: MessageRequest::RequestWork,
+                //    })
+                //    .await
+                //    .unwrap();
+            }
+            MessageResponse::NoWorkAvailable => {
+                todo!()
+            }
+            MessageResponse::SomeWork(work_definition) => {
+                trace!("Received work from peer {}", peer_id);
+
+                self.next_work = Some(work_definition);
+            }
+            MessageResponse::Acknowledge => {
+                trace!("An acknowledgment was received from peer {}", peer_id);
+            }
         }
     }
 }
