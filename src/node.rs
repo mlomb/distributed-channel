@@ -1,5 +1,5 @@
 use crate::{
-    consumer::{ConsumerNode, WorkEntry, WorkRx},
+    consumer::{ConsumerNode, WorkRx},
     producer::ProducerNode,
     swarm::SwarmLoop,
     Networked,
@@ -7,10 +7,10 @@ use crate::{
 
 pub struct NodeSetup {
     /// Address to listen on
-    pub(crate) listen_address: String,
+    pub listen_address: String,
 
     /// Name of the protocol
-    pub(crate) protocol: String,
+    pub protocol: String,
 }
 
 pub struct Node {
@@ -40,7 +40,7 @@ impl NodeSetup {
 
         let (command_sender, command_receiver) = tokio::sync::mpsc::channel(1);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(1);
-        let (work_tx, work_rx) = tokio::sync::mpsc::channel(1);
+        let (work_tx, work_rx) = async_channel::bounded(1);
 
         // start network loop
         runtime.spawn(SwarmLoop::<I, W, R>::start_loop(

@@ -4,6 +4,7 @@ use crate::node::NodeSetup;
 use crate::Networked;
 use futures::channel::oneshot;
 use futures::StreamExt;
+use futures::TryFutureExt;
 use libp2p::identity::Keypair;
 use libp2p::request_response;
 use libp2p::swarm::SwarmEvent;
@@ -15,6 +16,7 @@ use libp2p::{mdns, swarm::NetworkBehaviour};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt;
+use std::future::IntoFuture;
 use std::time::Duration;
 use tokio::select;
 
@@ -138,6 +140,7 @@ where
 
     pub async fn run_loop(mut self) {
         loop {
+            println!("Swarm Loop");
             tokio::select! {
                 Some(event) = self.swarm.next() => self.handle_behaviour_event(event).await,
                 Some(command) = self.command_receiver.recv() => self.handle_command(command),
@@ -146,6 +149,7 @@ where
     }
 
     async fn handle_behaviour_event(&mut self, event: SwarmEvent<BehaviourEvent<I, W, R>>) {
+        println!("Handling event: {:?}", event);
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 self.event_sender
@@ -180,12 +184,23 @@ where
                             })
                             .await
                             .unwrap();
-                        let response = receiver.await.unwrap();
-                        self.swarm
-                            .behaviour_mut()
-                            .request_response
-                            .send_response(channel, response)
-                            .unwrap();
+                        let response = tokio::time::timeout(Duration::from_secs(3), receiver).await;
+
+                        match response {
+                            Ok(Ok(response)) => {
+                                self.swarm
+                                    .behaviour_mut()
+                                    .request_response
+                                    .send_response(channel, response)
+                                    .unwrap();
+                            }
+                            Ok(Err(_)) => {
+                                println!("Failed to get response from handler");
+                            }
+                            Err(elapsed) => {
+                                println!("Request timed out: {:?}", elapsed);
+                            }
+                        }
                     }
                     request_response::Message::Response {
                         request_id,
@@ -205,26 +220,28 @@ where
                     request_id,
                     error,
                 } => {
-                    println!("Outbound failure: {:?}", error);
+                    println!("Outbound failure: {}", error);
                 }
                 request_response::Event::InboundFailure {
                     peer,
                     request_id,
                     error,
                 } => {
-                    println!("Inbound failure: {:?}", error);
+                    println!("Inbound failure: {}", error);
                 }
                 request_response::Event::ResponseSent { .. } => {}
             },
             a => {
-                //println!("Unhandled event: {:?}", a);
+                println!("Unhandled event: {:?}", a);
             }
         }
+        println!("Finished handling event");
     }
 
     fn handle_command(&mut self, command: Command<R>) {
         match command {
             Command::SendRequest { peer_id, request } => {
+                println!("Sending request to peer!");
                 self.swarm
                     .behaviour_mut()
                     .request_response

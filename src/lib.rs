@@ -4,6 +4,8 @@ pub mod message;
 pub mod node;
 pub mod producer;
 pub mod swarm;
+pub mod work_pool;
+pub mod worker;
 
 pub use crate::consumer::WorkEntry;
 pub use crate::consumer::WorkTx;

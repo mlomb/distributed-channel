@@ -12,8 +12,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub type WorkTx<I, W, R> = tokio::sync::mpsc::Sender<WorkEntry<I, W, R>>;
-pub type WorkRx<I, W, R> = tokio::sync::mpsc::Receiver<WorkEntry<I, W, R>>;
+pub type WorkTx<I, W, R> = async_channel::Sender<WorkEntry<I, W, R>>;
+pub type WorkRx<I, W, R> = async_channel::Receiver<WorkEntry<I, W, R>>;
 
 pub struct WorkEntry<I, W, R> {
     pub peer_data: Arc<Mutex<I>>,
@@ -117,6 +117,7 @@ where
                 }
                 request => {
                     warn!("Unexpected request from peer {}: {:?}", peer_id, request);
+                    sender.send(MessageResponse::Acknowledge).unwrap();
                 }
             },
             Event::MessageResponseReceived { peer_id, message } => match message {
@@ -160,12 +161,12 @@ where
         let (sender, receiver) = oneshot::channel();
 
         let peer_id = peer_id.clone();
-        let mut command_sender = self.command_sender.clone();
+        let command_sender = self.command_sender.clone();
 
         tokio::spawn(async move {
             match receiver.await {
                 Ok(result) => {
-                    trace!("Received work result for peer {}", peer_id);
+                    trace!("Sending work result to peer {}", peer_id);
 
                     command_sender
                         .send(Command::SendRequest {

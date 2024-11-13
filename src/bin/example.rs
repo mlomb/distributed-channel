@@ -1,8 +1,10 @@
-use distributed_channel::node::NodeSetup;
-use futures::StreamExt;
+use distributed_channel::{node::NodeSetup, worker::Worker};
 use log::*;
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{
+    fmt::Debug,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Init {
@@ -24,34 +26,22 @@ fn main() {
         .filter_module("distributed_channel", LevelFilter::Trace)
         .init();
 
+    let node_setup = NodeSetup::default();
+
     if std::env::args().nth(1).unwrap() == "consumer" {
-        consumer();
+        // consumer();
+        let worker = Worker::new(node_setup, 8, process);
+
+        std::thread::park();
     } else {
         producer();
     }
 }
 
-fn consumer() {
-    let (_node, mut tx) = NodeSetup::default().into_consumer::<Init, WorkDefinition, WorkResult>();
+fn process(init: Arc<Mutex<Init>>, input: WorkDefinition) -> WorkResult {
+    std::thread::sleep(std::time::Duration::from_millis(10));
 
-    let mut i = 0;
-    while let Some(work) = tx.blocking_recv() {
-        println!("PROCESSING WORK: {:?}", work.work_definition);
-        println!("i = {}", i);
-        i += 1;
-
-        std::thread::sleep(std::time::Duration::from_secs(1));
-
-        work.sender
-            .send(WorkResult {
-                id: work.work_definition.id,
-            })
-            .unwrap();
-
-        if i == 5 {
-            break;
-        }
-    }
+    WorkResult { id: 100 * input.id }
 }
 
 fn producer() {
