@@ -1,6 +1,7 @@
 use super::message::MessageRequest;
 use super::message::MessageResponse;
 use crate::node::NodeSetup;
+use crate::Networked;
 use futures::channel::oneshot;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
@@ -66,9 +67,9 @@ where
 
 pub struct SwarmLoop<I, W, R>
 where
-    I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+    I: Networked,
+    W: Networked,
+    R: Networked,
 {
     /// The libp2p Swarm
     swarm: Swarm<Behaviour<I, W, R>>,
@@ -82,9 +83,9 @@ where
 
 impl<I, W, R> SwarmLoop<I, W, R>
 where
-    I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+    I: Networked,
+    W: Networked,
+    R: Networked,
 {
     pub async fn start_loop(
         node_setup: NodeSetup,

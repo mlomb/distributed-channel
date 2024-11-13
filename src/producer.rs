@@ -2,11 +2,10 @@ use super::{message::MessageRequest, swarm::Event};
 use crate::{
     message::MessageResponse,
     swarm::{CommandTx, EventRx},
+    Networked,
 };
-use core::fmt;
-use crossbeam_channel::{select, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use log::{info, trace, warn};
-use serde::{de::DeserializeOwned, Serialize};
 
 // https://github.com/libp2p/rust-libp2p/issues/5383
 pub struct ProducerNode<I, W, R> {
@@ -21,9 +20,9 @@ pub struct ProducerNode<I, W, R> {
 
 impl<I, W, R> ProducerNode<I, W, R>
 where
-    I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+    I: Networked,
+    W: Networked,
+    R: Networked,
 {
     pub async fn start_loop(
         command_sender: CommandTx<R>,
@@ -45,16 +44,8 @@ where
 
     pub async fn run_loop(mut self) {
         loop {
-            tokio::select! {
-                event = self.event_receiver.recv() => {
-                    self.handle_event(event.unwrap());
-                },
-                //recv(self.rx) -> work_definition => {
-                //    let work_definition = work_definition.unwrap();
-                //    println!("Received work: {:?}", work_definition);
-                //},
-                //recv(self.swarm_node.event_receiver()) -> event => self.handle_event(event.unwrap()),
-            };
+            let event = self.event_receiver.recv().await.unwrap();
+            self.handle_event(event);
         }
     }
 

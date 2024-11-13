@@ -1,10 +1,9 @@
 use crate::{
-    consumer::{ConsumerNode, WorkEntry},
+    consumer::{ConsumerNode, WorkEntry, WorkRx},
     producer::ProducerNode,
     swarm::SwarmLoop,
+    Networked,
 };
-use serde::{de::DeserializeOwned, Serialize};
-use std::fmt;
 
 pub struct NodeSetup {
     /// Address to listen on
@@ -31,16 +30,17 @@ impl Default for NodeSetup {
 }
 
 impl NodeSetup {
-    pub fn into_consumer<I, W, R>(self, tx: tokio::sync::mpsc::Sender<WorkEntry<W, R>>) -> Node
+    pub fn into_consumer<I, W, R>(self) -> (Node, WorkRx<W, R>)
     where
-        I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-        W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-        R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+        I: Networked,
+        W: Networked,
+        R: Networked,
     {
         let runtime = tokio::runtime::Runtime::new().expect("tokio to initialize");
 
         let (command_sender, command_receiver) = tokio::sync::mpsc::channel(1);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(1);
+        let (work_tx, work_rx) = tokio::sync::mpsc::channel(1);
 
         // start network loop
         runtime.spawn(SwarmLoop::<I, W, R>::start_loop(
@@ -53,27 +53,32 @@ impl NodeSetup {
         runtime.spawn(ConsumerNode::<I, W, R>::start_loop(
             command_sender,
             event_receiver,
-            tx,
+            work_tx,
         ));
 
-        Node { runtime }
+        (Node { runtime }, work_rx)
     }
 
     pub fn into_producer<I, W, R>(
         self,
         init: I,
-        tx: crossbeam_channel::Receiver<W>,
-        rx: crossbeam_channel::Sender<R>,
-    ) -> Node
+    ) -> (
+        Node,
+        crossbeam_channel::Sender<W>,
+        crossbeam_channel::Receiver<R>,
+    )
     where
-        I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-        W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-        R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+        I: Networked,
+        W: Networked,
+        R: Networked,
     {
         let runtime = tokio::runtime::Runtime::new().expect("tokio to initialize");
 
         let (command_sender, command_receiver) = tokio::sync::mpsc::channel(1);
         let (event_sender, event_receiver) = tokio::sync::mpsc::channel(1);
+
+        let (s, r) = crossbeam_channel::bounded::<W>(1);
+        let (u, v) = crossbeam_channel::bounded::<R>(1);
 
         // start network loop
         runtime.spawn(SwarmLoop::<I, W, R>::start_loop(
@@ -82,15 +87,15 @@ impl NodeSetup {
             event_sender,
         ));
 
-        // start consumer loop
+        // start producer loop
         runtime.spawn(ProducerNode::<I, W, R>::start_loop(
             command_sender,
             event_receiver,
             init,
-            tx,
-            rx,
+            r,
+            u,
         ));
 
-        Node { runtime }
+        (Node { runtime }, s, v)
     }
 }

@@ -2,16 +2,15 @@ use super::swarm::Event;
 use crate::{
     message::{MessageRequest, MessageResponse},
     swarm::{Command, CommandTx, EventRx},
+    Networked,
 };
-use crossbeam_channel::select;
-use futures::{channel::oneshot, SinkExt};
+use futures::channel::oneshot;
 use libp2p::PeerId;
 use log::{info, trace, warn};
-use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    fmt,
-};
+use std::collections::{hash_map::Entry, HashMap};
+
+pub type WorkTx<W, R> = tokio::sync::mpsc::Sender<WorkEntry<W, R>>;
+pub type WorkRx<W, R> = tokio::sync::mpsc::Receiver<WorkEntry<W, R>>;
 
 pub struct WorkEntry<W, R> {
     pub work_definition: W,
@@ -21,25 +20,25 @@ pub struct WorkEntry<W, R> {
 pub struct ConsumerNode<I, W, R> {
     peers: HashMap<PeerId, Peer<I, W>>,
 
-    tx: tokio::sync::mpsc::Sender<WorkEntry<W, R>>,
+    work_tx: WorkTx<W, R>,
     command_sender: CommandTx<R>,
     event_receiver: EventRx<I, W, R>,
 }
 
 impl<I, W, R> ConsumerNode<I, W, R>
 where
-    I: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: fmt::Debug + Send + Clone + Serialize + DeserializeOwned + 'static,
+    I: Networked,
+    W: Networked,
+    R: Networked,
 {
     pub async fn start_loop(
         command_sender: CommandTx<R>,
         event_receiver: EventRx<I, W, R>,
-        tx: tokio::sync::mpsc::Sender<WorkEntry<W, R>>,
+        work_tx: WorkTx<W, R>,
     ) {
         Self {
             peers: HashMap::new(),
-            tx,
+            work_tx,
             command_sender,
             event_receiver,
         }
@@ -63,7 +62,7 @@ where
                     event = self.event_receiver.recv() => {
                         self.handle_event(event.unwrap()).await;
                     },
-                    _ = self.tx.send(entry) => {
+                    _ = self.work_tx.send(entry) => {
                         trace!("Sent work entry from peer {} to channel, asking for more work...", peer_id);
 
                         self.peers.get_mut(&peer_id).unwrap().next_work = None;
