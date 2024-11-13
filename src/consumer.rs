@@ -7,12 +7,16 @@ use crate::{
 use futures::channel::oneshot;
 use libp2p::PeerId;
 use log::{info, trace, warn};
-use std::collections::{hash_map::Entry, HashMap};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    sync::{Arc, Mutex},
+};
 
-pub type WorkTx<W, R> = tokio::sync::mpsc::Sender<WorkEntry<W, R>>;
-pub type WorkRx<W, R> = tokio::sync::mpsc::Receiver<WorkEntry<W, R>>;
+pub type WorkTx<I, W, R> = tokio::sync::mpsc::Sender<WorkEntry<I, W, R>>;
+pub type WorkRx<I, W, R> = tokio::sync::mpsc::Receiver<WorkEntry<I, W, R>>;
 
-pub struct WorkEntry<W, R> {
+pub struct WorkEntry<I, W, R> {
+    pub peer_data: Arc<Mutex<I>>,
     pub work_definition: W,
     pub sender: oneshot::Sender<R>,
 }
@@ -20,7 +24,7 @@ pub struct WorkEntry<W, R> {
 pub struct ConsumerNode<I, W, R> {
     peers: HashMap<PeerId, Peer<I, W>>,
 
-    work_tx: WorkTx<W, R>,
+    work_tx: WorkTx<I, W, R>,
     command_sender: CommandTx<R>,
     event_receiver: EventRx<I, W, R>,
 }
@@ -34,7 +38,7 @@ where
     pub async fn start_loop(
         command_sender: CommandTx<R>,
         event_receiver: EventRx<I, W, R>,
-        work_tx: WorkTx<W, R>,
+        work_tx: WorkTx<I, W, R>,
     ) {
         Self {
             peers: HashMap::new(),
@@ -123,7 +127,8 @@ where
                     info!("Peer {} is a producer! Requesting work...", peer_id);
 
                     // save the initialization data
-                    self.peers.get_mut(&peer_id).expect("peer to exist").init = Some(init);
+                    self.peers.get_mut(&peer_id).expect("peer to exist").init =
+                        Some(Arc::new(Mutex::new(init)));
                     // request work
                     self.command_sender
                         .send(Command::SendRequest {
@@ -151,7 +156,7 @@ where
         }
     }
 
-    fn build_entry(&self, peer_id: PeerId, work_definition: W) -> WorkEntry<W, R> {
+    fn build_entry(&self, peer_id: PeerId, work_definition: W) -> WorkEntry<I, W, R> {
         let (sender, receiver) = oneshot::channel();
 
         let peer_id = peer_id.clone();
@@ -178,6 +183,7 @@ where
         });
 
         WorkEntry {
+            peer_data: self.peers.get(&peer_id).unwrap().init.clone().unwrap(),
             work_definition,
             sender,
         }
@@ -187,7 +193,7 @@ where
 struct Peer<I, W> {
     peer_id: PeerId,
 
-    init: Option<I>,
+    init: Option<Arc<Mutex<I>>>,
     next_work: Option<W>,
 }
 

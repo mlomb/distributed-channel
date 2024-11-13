@@ -30,7 +30,7 @@ impl Default for NodeSetup {
 }
 
 impl NodeSetup {
-    pub fn into_consumer<I, W, R>(self) -> (Node, WorkRx<W, R>)
+    pub fn into_consumer<I, W, R>(self) -> (Node, WorkRx<I, W, R>)
     where
         I: Networked,
         W: Networked,
