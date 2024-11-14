@@ -5,11 +5,13 @@ use crate::Networked;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
 use libp2p::request_response;
+use libp2p::swarm::DialError;
 use libp2p::swarm::SwarmEvent;
 use libp2p::PeerId;
 use libp2p::StreamProtocol;
 use libp2p::Swarm;
 use libp2p::{mdns, swarm::NetworkBehaviour};
+use log::error;
 use log::info;
 use log::trace;
 use std::future::Future;
@@ -137,6 +139,19 @@ where
                         .send_request(&peer_id, request);
                 }
             }
+            SwarmEvent::OutgoingConnectionError {
+                peer_id,
+                error: err,
+                ..
+            } => match err {
+                DialError::Transport(err_list) => {
+                    for (addr, err) in err_list {
+                        error!("Transport error to addr {}: {:?}", addr, err);
+                        // TODO: retry
+                    }
+                }
+                _ => error!("Outgoing connection error to peer {:?}: {}", peer_id, err),
+            },
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
                 request_response::Event::Message { peer, message } => match message {
                     request_response::Message::Request {
