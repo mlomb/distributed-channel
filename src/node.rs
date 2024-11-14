@@ -1,9 +1,10 @@
 use crate::{
-    consumer::{ConsumerPeerHandler, WorkRx},
-    producer::ProducerPeerHandler,
-    swarm::{PeerHandler, SwarmLoop},
+    consumer::{ConsumerHandler, WorkRx},
+    producer::ProducerHandler,
+    swarm::SwarmLoop,
     Networked,
 };
+use tokio::runtime::Runtime;
 
 pub struct NodeSetup {
     /// Address to listen on
@@ -36,17 +37,16 @@ impl NodeSetup {
         W: Networked,
         R: Networked,
     {
-        let runtime = tokio::runtime::Runtime::new().expect("tokio to initialize");
+        let runtime = Runtime::new().expect("tokio to initialize");
 
+        // this channel is bounded to 1 so that we don't reserve too many work items and starve other consumers
         let (work_tx, work_rx) = async_channel::bounded(1);
 
         // start network loop
-        runtime.spawn(
-            SwarmLoop::<I, W, R, ConsumerPeerHandler<I, W, R>>::start_loop(
-                self,
-                ConsumerPeerHandler::new(work_tx.clone()),
-            ),
-        );
+        runtime.spawn(SwarmLoop::<I, W, R, ConsumerHandler<I, W, R>>::start(
+            self,
+            ConsumerHandler::new(work_tx.clone()),
+        ));
 
         (Node { runtime }, work_rx)
     }
@@ -64,18 +64,18 @@ impl NodeSetup {
         W: Networked,
         R: Networked,
     {
-        let runtime = tokio::runtime::Runtime::new().expect("tokio to initialize");
+        let runtime = Runtime::new().expect("tokio to initialize");
 
+        // this channel is bounded to 1 so that when we consume a work item, we know we are sending it
         let (s, r) = crossbeam_channel::bounded::<W>(1);
+        // this channel is unbounded so that the producer can send results without blocking
         let (u, v) = crossbeam_channel::unbounded::<R>();
 
         // start network loop
-        runtime.spawn(
-            SwarmLoop::<I, W, R, ProducerPeerHandler<I, W, R>>::start_loop(
-                self,
-                ProducerPeerHandler::new(init.clone(), r.clone(), u.clone()),
-            ),
-        );
+        runtime.spawn(SwarmLoop::<I, W, R, ProducerHandler<I, W, R>>::start(
+            self,
+            ProducerHandler::new(init.clone(), r.clone(), u.clone()),
+        ));
 
         (Node { runtime }, s, v)
     }

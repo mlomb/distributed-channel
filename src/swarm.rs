@@ -12,14 +12,11 @@ use libp2p::Swarm;
 use libp2p::{mdns, swarm::NetworkBehaviour};
 use log::info;
 use log::trace;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::future::Future;
 use std::time::Duration;
 
 pub trait PeerHandler<I, W, R> {
     fn next_request(&mut self) -> impl Future<Output = Option<(PeerId, MessageRequest<R>)>>;
-
     fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>>;
     fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W>;
     fn handle_response(
@@ -33,9 +30,9 @@ pub trait PeerHandler<I, W, R> {
 #[derive(NetworkBehaviour)]
 struct Behaviour<I, W, R>
 where
-    I: Send + Clone + Serialize + DeserializeOwned + 'static,
-    W: Send + Clone + Serialize + DeserializeOwned + 'static,
-    R: Send + Clone + Serialize + DeserializeOwned + 'static,
+    I: Networked,
+    W: Networked,
+    R: Networked,
 {
     mdns: mdns::tokio::Behaviour,
     request_response: request_response::cbor::Behaviour<MessageRequest<R>, MessageResponse<I, W>>,
@@ -62,7 +59,7 @@ where
     R: Networked,
     P: PeerHandler<I, W, R> + Send,
 {
-    pub async fn start_loop(node_setup: NodeSetup, peer_handler: P) {
+    pub async fn start(node_setup: NodeSetup, peer_handler: P) {
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -121,7 +118,6 @@ where
     }
 
     async fn handle_behaviour_event(&mut self, event: SwarmEvent<BehaviourEvent<I, W, R>>) {
-        //println!("Handling event: {:?}", event);
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
                 trace!("Listening on {}", address);
@@ -144,9 +140,7 @@ where
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
                 request_response::Event::Message { peer, message } => match message {
                     request_response::Message::Request {
-                        request_id,
-                        request,
-                        channel,
+                        request, channel, ..
                     } => {
                         let response = self.peer_handler.handle_request(peer, request.clone());
                         self.swarm
@@ -155,10 +149,7 @@ where
                             .send_response(channel, response)
                             .unwrap();
                     }
-                    request_response::Message::Response {
-                        request_id,
-                        response,
-                    } => {
+                    request_response::Message::Response { response, .. } => {
                         if let Some(request) =
                             self.peer_handler.handle_response(peer, response.clone())
                         {
@@ -169,18 +160,10 @@ where
                         }
                     }
                 },
-                request_response::Event::OutboundFailure {
-                    peer,
-                    request_id,
-                    error,
-                } => {
+                request_response::Event::OutboundFailure { error, .. } => {
                     println!("Outbound failure: {}", error);
                 }
-                request_response::Event::InboundFailure {
-                    peer,
-                    request_id,
-                    error,
-                } => {
+                request_response::Event::InboundFailure { error, .. } => {
                     println!("Inbound failure: {}", error);
                 }
                 request_response::Event::ResponseSent { .. } => {}

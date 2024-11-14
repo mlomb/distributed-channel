@@ -5,7 +5,7 @@ use crate::{
 };
 use futures::channel::oneshot;
 use libp2p::PeerId;
-use log::{info, trace, warn};
+use log::{info, trace};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -20,13 +20,7 @@ pub struct WorkEntry<I, W, R> {
     pub sender: oneshot::Sender<R>,
 }
 
-/// ------------------------------------------------------------------------
-/// ------------------------------------------------------------------------
-/// ------------------------------------------------------------------------
-/// ------------------------------------------------------------------------
-/// ------------------------------------------------------------------------
-
-pub struct ConsumerPeerHandler<I, W, R> {
+pub struct ConsumerHandler<I, W, R> {
     work_tx: WorkTx<I, W, R>,
 
     response_rx: tokio::sync::mpsc::Receiver<(PeerId, R)>,
@@ -35,12 +29,16 @@ pub struct ConsumerPeerHandler<I, W, R> {
     peers: HashMap<PeerId, Peer<I, W>>,
 }
 
+/// A peer in the network, from the perspective of a consumer.
 struct Peer<I, W> {
+    /// The initialization data provided by the peer.
     init: Option<Arc<Mutex<I>>>,
+
+    /// The next work item provided by this peer.
     next_work: Option<W>,
 }
 
-impl<I, W, R> ConsumerPeerHandler<I, W, R>
+impl<I, W, R> ConsumerHandler<I, W, R>
 where
     R: Networked,
 {
@@ -81,7 +79,7 @@ where
     }
 }
 
-impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R>
+impl<I, W, R> PeerHandler<I, W, R> for ConsumerHandler<I, W, R>
 where
     I: Networked,
     W: Networked,

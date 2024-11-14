@@ -2,24 +2,22 @@ use super::message::MessageRequest;
 use crate::{message::MessageResponse, swarm::PeerHandler};
 use crossbeam_channel::{Receiver, Sender};
 use libp2p::PeerId;
-use log::{info, trace, warn};
 
-// https://github.com/libp2p/rust-libp2p/issues/5383
-
-pub struct ProducerPeerHandler<I, W, R> {
+pub struct ProducerHandler<I, W, R> {
+    // https://github.com/libp2p/rust-libp2p/issues/5383
     init: I,
 
     rx: Receiver<W>,
     tx: Sender<R>,
 }
 
-impl<I, W, R> ProducerPeerHandler<I, W, R> {
+impl<I, W, R> ProducerHandler<I, W, R> {
     pub fn new(init: I, rx: Receiver<W>, tx: Sender<R>) -> Self {
         Self { init, rx, tx }
     }
 }
 
-impl<I, W, R> PeerHandler<I, W, R> for ProducerPeerHandler<I, W, R>
+impl<I, W, R> PeerHandler<I, W, R> for ProducerHandler<I, W, R>
 where
     I: Clone,
 {
@@ -29,11 +27,15 @@ where
         None
     }
 
-    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>> {
+    fn handle_connection(&self, _peer_id: PeerId) -> Option<MessageRequest<R>> {
         None
     }
 
-    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
+    fn handle_request(
+        &self,
+        _peer_id: PeerId,
+        request: MessageRequest<R>,
+    ) -> MessageResponse<I, W> {
         match request {
             MessageRequest::WhoAreYou => MessageResponse::MeProducer(self.init.clone()),
             MessageRequest::RequestWork => {
@@ -54,8 +56,8 @@ where
 
     fn handle_response(
         &mut self,
-        peer_id: PeerId,
-        response: MessageResponse<I, W>,
+        _peer_id: PeerId,
+        _response: MessageResponse<I, W>,
     ) -> Option<MessageRequest<R>> {
         None
     }

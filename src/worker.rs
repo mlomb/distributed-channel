@@ -33,9 +33,7 @@ where
                             .send(func(work.peer_data, work.work_definition))
                             .unwrap();
                     }
-                    Err(err) => {
-                        //println!("----- Error receiving work: {:?}", err);
-                    }
+                    Err(_) => unreachable!("should not be dropped"),
                 }
             });
 
