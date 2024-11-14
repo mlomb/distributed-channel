@@ -84,12 +84,14 @@ impl NodeSetup {
         let (u, v) = crossbeam_channel::bounded::<R>(1);
 
         // start network loop
-        runtime.spawn(SwarmLoop::<I, W, R, ProducerPeerHandler>::start_loop(
-            self,
-            command_receiver,
-            event_sender,
-            ProducerPeerHandler::new(),
-        ));
+        runtime.spawn(
+            SwarmLoop::<I, W, R, ProducerPeerHandler<I, W, R>>::start_loop(
+                self,
+                command_receiver,
+                event_sender,
+                ProducerPeerHandler::new(init.clone(), r.clone(), u.clone()),
+            ),
+        );
 
         // start producer loop
         runtime.spawn(ProducerNode::<I, W, R>::start_loop(

@@ -102,24 +102,52 @@ where
     }
 }
 
-pub struct ProducerPeerHandler {}
+pub struct ProducerPeerHandler<I, W, R> {
+    init: I,
 
-impl ProducerPeerHandler {
-    pub fn new() -> Self {
-        Self {}
+    rx: Receiver<W>,
+    tx: Sender<R>,
+}
+
+impl<I, W, R> ProducerPeerHandler<I, W, R> {
+    pub fn new(init: I, rx: Receiver<W>, tx: Sender<R>) -> Self {
+        Self { init, rx, tx }
     }
 }
 
-impl<I, W, R> PeerHandler<I, W, R> for ProducerPeerHandler {
-    async fn next_request(&self) -> Option<MessageRequest<R>> {
+impl<I, W, R> PeerHandler<I, W, R> for ProducerPeerHandler<I, W, R>
+where
+    I: Clone,
+{
+    async fn next_request(&mut self) -> Option<(PeerId, MessageRequest<R>)> {
+        //timeout
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         None
     }
 
-    fn handle_connection(&self, peer_id: PeerId) {}
-
-    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
-        MessageResponse::Acknowledge
+    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>> {
+        None
     }
 
-    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>) {}
+    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
+        match request {
+            MessageRequest::WhoAreYou => MessageResponse::MeProducer(self.init.clone()),
+            MessageRequest::RequestWork => {
+                if let Ok(work) = self.rx.try_recv() {
+                    MessageResponse::SomeWork(work)
+                } else {
+                    MessageResponse::NoWorkAvailable
+                }
+            }
+            MessageRequest::RespondWork(_) => todo!(),
+        }
+    }
+
+    fn handle_response(
+        &mut self,
+        peer_id: PeerId,
+        response: MessageResponse<I, W>,
+    ) -> Option<MessageRequest<R>> {
+        None
+    }
 }

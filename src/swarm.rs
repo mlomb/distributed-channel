@@ -12,8 +12,11 @@ use libp2p::PeerId;
 use libp2p::StreamProtocol;
 use libp2p::Swarm;
 use libp2p::{mdns, swarm::NetworkBehaviour};
+use log::info;
+use log::trace;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::borrow::BorrowMut;
 use std::future::Future;
 use std::time::Duration;
 
@@ -24,11 +27,15 @@ pub type EventTx<I, W, R> = tokio::sync::mpsc::Sender<Event<I, W, R>>;
 pub type EventRx<I, W, R> = tokio::sync::mpsc::Receiver<Event<I, W, R>>;
 
 pub trait PeerHandler<I, W, R> {
-    fn next_request(&self) -> impl Future<Output = Option<MessageRequest<R>>>;
+    fn next_request(&mut self) -> impl Future<Output = Option<(PeerId, MessageRequest<R>)>>;
 
-    fn handle_connection(&self, peer_id: PeerId);
+    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>>;
     fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W>;
-    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>);
+    fn handle_response(
+        &mut self,
+        peer_id: PeerId,
+        response: MessageResponse<I, W>,
+    ) -> Option<MessageRequest<R>>;
 }
 
 /// Events sent from the Swarm loop to the outside world.
@@ -152,22 +159,24 @@ where
 
     pub async fn run_loop(mut self) {
         loop {
-            println!("Swarm Loop");
             tokio::select! {
                 Some(event) = self.swarm.next() => self.handle_behaviour_event(event).await,
                 Some(command) = self.command_receiver.recv() => self.handle_command(command),
+                Some((peer_id, request)) = self.peer_handler.next_request() => {
+                    self.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_request(&peer_id, request);
+                }
             }
         }
     }
 
     async fn handle_behaviour_event(&mut self, event: SwarmEvent<BehaviourEvent<I, W, R>>) {
-        println!("Handling event: {:?}", event);
+        //println!("Handling event: {:?}", event);
         match event {
             SwarmEvent::NewListenAddr { address, .. } => {
-                self.event_sender
-                    .send(Event::ListeningOn { address })
-                    .await
-                    .unwrap();
+                trace!("Listening on {}", address);
             }
             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 for (peer_id, _multiaddr) in list {
@@ -175,12 +184,14 @@ where
                 }
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                self.event_sender
-                    .send(Event::PeerConnected { peer_id })
-                    .await
-                    .unwrap();
+                info!("Connected to peer {}", peer_id);
 
-                self.peer_handler.handle_connection(peer_id);
+                if let Some(request) = self.peer_handler.handle_connection(peer_id) {
+                    self.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_request(&peer_id, request);
+                }
             }
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
                 request_response::Event::Message { peer, message } => match message {
@@ -189,57 +200,25 @@ where
                         request,
                         channel,
                     } => {
-                        let res = self.peer_handler.handle_request(peer, request.clone());
-                        if let MessageResponse::Acknowledge = res {
-                        } else {
-                            self.swarm
-                                .behaviour_mut()
-                                .request_response
-                                .send_response(channel, res)
-                                .unwrap();
-                            return;
-                        }
-
-                        let (sender, receiver) = oneshot::channel();
-                        self.event_sender
-                            .send(Event::MessageRequestReceived {
-                                peer_id: peer,
-                                message: request,
-                                sender,
-                            })
-                            .await
+                        let response = self.peer_handler.handle_request(peer, request.clone());
+                        self.swarm
+                            .behaviour_mut()
+                            .request_response
+                            .send_response(channel, response)
                             .unwrap();
-                        let response = tokio::time::timeout(Duration::from_secs(3), receiver).await;
-
-                        match response {
-                            Ok(Ok(response)) => {
-                                self.swarm
-                                    .behaviour_mut()
-                                    .request_response
-                                    .send_response(channel, response)
-                                    .unwrap();
-                            }
-                            Ok(Err(_)) => {
-                                println!("Failed to get response from handler");
-                            }
-                            Err(elapsed) => {
-                                println!("Request timed out: {:?}", elapsed);
-                            }
-                        }
                     }
                     request_response::Message::Response {
                         request_id,
                         response,
                     } => {
-                        self.peer_handler.handle_response(peer, response.clone());
-
-                        self.event_sender
-                            .send(Event::MessageResponseReceived {
-                                peer_id: peer,
-                                message: response,
-                            })
-                            .await
-                            .unwrap();
+                        if let Some(request) =
+                            self.peer_handler.handle_response(peer, response.clone())
+                        {
+                            self.swarm
+                                .behaviour_mut()
+                                .request_response
+                                .send_request(&peer, request);
+                        }
                     }
                 },
                 request_response::Event::OutboundFailure {
@@ -262,7 +241,6 @@ where
                 println!("Unhandled event: {:?}", a);
             }
         }
-        println!("Finished handling event");
     }
 
     fn handle_command(&mut self, command: Command<R>) {

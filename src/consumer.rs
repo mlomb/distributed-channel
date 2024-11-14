@@ -218,28 +218,102 @@ impl<I, W> Peer<I, W> {
 pub struct ConsumerPeerHandler<I, W, R> {
     // -
     init: Option<Arc<Mutex<I>>>,
+    peer_id: Option<PeerId>,
     next_work: Option<W>,
 
     work_tx: WorkTx<I, W, R>,
+
+    response_rx: tokio::sync::mpsc::Receiver<(PeerId, R)>,
+    response_tx: tokio::sync::mpsc::Sender<(PeerId, R)>,
 }
 
-impl<I, W, R> ConsumerPeerHandler<I, W, R> {
+impl<I, W, R> ConsumerPeerHandler<I, W, R>
+where
+    R: Networked,
+{
     pub fn new(work_tx: WorkTx<I, W, R>) -> Self {
+        let (response_tx, response_rx) = tokio::sync::mpsc::channel(1);
         Self {
             init: None,
             next_work: None,
             work_tx,
+            response_rx,
+            response_tx,
+            peer_id: None,
+        }
+    }
+
+    fn build_entry(&self, peer_id: PeerId, work_definition: W) -> WorkEntry<I, W, R> {
+        let (sender, receiver) = oneshot::channel::<R>();
+        let peer_id = peer_id.clone();
+        let response_tx = self.response_tx.clone();
+
+        tokio::spawn(async move {
+            match receiver.await {
+                Ok(result) => {
+                    trace!("Sending work result to peer {}", peer_id);
+
+                    response_tx.send((peer_id.clone(), result)).await.unwrap();
+                }
+                Err(_) => {
+                    // receiver dropped
+                    // this happens when the `WorkEntry` was not used in the select!
+                }
+            }
+        });
+
+        WorkEntry {
+            peer_data: self.init.as_ref().unwrap().clone(),
+            work_definition,
+            sender,
         }
     }
 }
 
-impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R> {
-    async fn next_request(&self) -> Option<MessageRequest<R>> {
-        todo!()
+impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R>
+where
+    I: Networked,
+    W: Networked,
+    R: Networked,
+{
+    async fn next_request(&mut self) -> Option<(PeerId, MessageRequest<R>)> {
+        if let Some(next_work) = self.next_work.clone() {
+            let peer_id = self.peer_id.clone().unwrap();
+            let entry = self.build_entry(peer_id, next_work);
+
+            tokio::select! {
+                _ = self.work_tx.send(entry) => {
+                    trace!("Sent work entry from peer {} to channel, asking for more work...", peer_id);
+
+                    self.next_work = None;
+                    //self.peers.get_mut(&peer_id).unwrap().next_work = None;
+                    // ask for more work
+                    Some((peer_id, MessageRequest::RequestWork))
+                },
+                Some((peer_id, result)) = self.response_rx.recv() => {
+                    trace!("Received work result from peer {}", peer_id);
+
+                    Some((peer_id,MessageRequest::RespondWork(result)))
+                },
+            }
+        } else {
+            // timeout
+            tokio::select! {
+                Some((peer_id, result)) = self.response_rx.recv() => {
+                    trace!("Received work result from peer {}", peer_id);
+
+                    Some((peer_id, MessageRequest::RespondWork(result)))
+                },
+                //_ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                //    None
+                //},
+            }
+        }
     }
 
-    fn handle_connection(&self, peer_id: PeerId) {
+    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>> {
         info!("Connected to peer {}, asking for identity", peer_id);
+        Some(MessageRequest::WhoAreYou)
     }
 
     fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
@@ -248,28 +322,28 @@ impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R> {
                 info!("Received a request for identity from peer {}.", peer_id);
                 MessageResponse::MeConsumer
             }
-            request => MessageResponse::Acknowledge,
+            _ => MessageResponse::Acknowledge,
         }
     }
 
-    fn handle_response(&mut self, peer_id: PeerId, response: MessageResponse<I, W>) {
+    fn handle_response(
+        &mut self,
+        peer_id: PeerId,
+        response: MessageResponse<I, W>,
+    ) -> Option<MessageRequest<R>> {
         match response {
             MessageResponse::MeConsumer => {
                 info!("Peer {} is a consumer", peer_id);
+                None
             }
             MessageResponse::MeProducer(init) => {
                 info!("Peer {} is a producer! Requesting work...", peer_id);
 
                 // save the initialization data
                 self.init = Some(Arc::new(Mutex::new(init)));
+                self.peer_id = Some(peer_id);
                 // request work
-                //self.command_sender
-                //    .send(Command::SendRequest {
-                //        peer_id,
-                //        request: MessageRequest::RequestWork,
-                //    })
-                //    .await
-                //    .unwrap();
+                Some(MessageRequest::RequestWork)
             }
             MessageResponse::NoWorkAvailable => {
                 todo!()
@@ -278,9 +352,11 @@ impl<I, W, R> PeerHandler<I, W, R> for ConsumerPeerHandler<I, W, R> {
                 trace!("Received work from peer {}", peer_id);
 
                 self.next_work = Some(work_definition);
+                None
             }
             MessageResponse::Acknowledge => {
                 trace!("An acknowledgment was received from peer {}", peer_id);
+                None
             }
         }
     }
