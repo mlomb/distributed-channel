@@ -86,6 +86,7 @@ where
     R: Networked,
 {
     async fn next_request(&mut self) -> Option<(PeerId, MessageRequest<R>)> {
+        // TODO: balance
         let next_peer_with_work = self
             .peers
             .iter()

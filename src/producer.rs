@@ -22,8 +22,8 @@ where
     I: Clone,
 {
     async fn next_request(&mut self) -> Option<(PeerId, MessageRequest<R>)> {
-        //timeout
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // sleep since we don't have any work to do
+        tokio::time::sleep(tokio::time::Duration::from_secs(69_420_666)).await;
         None
     }
 

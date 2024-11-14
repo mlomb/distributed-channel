@@ -1,4 +1,4 @@
-use distributed_channel::{node::NodeSetup, worker::Worker};
+use distributed_channel::{node::NodeSetup, start_consumer_node};
 use log::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,10 +29,7 @@ fn main() {
     let node_setup = NodeSetup::default();
 
     if std::env::args().nth(1).unwrap() == "consumer" {
-        // consumer();
-        let _worker = Worker::new(node_setup, 8, process);
-
-        std::thread::park();
+        start_consumer_node(node_setup, 8, process);
     } else {
         producer();
     }
