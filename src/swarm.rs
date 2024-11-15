@@ -12,7 +12,6 @@ use libp2p::StreamProtocol;
 use libp2p::Swarm;
 use libp2p::{mdns, swarm::NetworkBehaviour};
 use log::error;
-use log::info;
 use log::trace;
 use std::future::Future;
 use std::time::Duration;

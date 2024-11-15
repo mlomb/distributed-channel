@@ -68,7 +68,7 @@ impl NodeSetup {
 
         // this channel is bounded to 1 so that when we consume a work item, we know we are sending it
         let (s, r) = crossbeam_channel::bounded::<W>(1);
-        // this channel is unbounded so that the producer can send results without blocking
+        // this channel is unbounded so that the producer loop can send results without blocking
         let (u, v) = crossbeam_channel::unbounded::<R>();
 
         // start network loop
