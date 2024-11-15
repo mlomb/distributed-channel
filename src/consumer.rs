@@ -7,7 +7,7 @@ use futures::channel::oneshot;
 use libp2p::PeerId;
 use log::{info, trace};
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -72,7 +72,14 @@ where
         });
 
         WorkEntry {
-            peer_data: self.peers.get(&peer_id).unwrap().init.clone().unwrap(),
+            peer_data: self
+                .peers
+                .get(&peer_id)
+                .unwrap()
+                .init
+                .as_ref()
+                .unwrap()
+                .clone(),
             work_definition,
             sender,
         }
@@ -119,12 +126,30 @@ where
         }
     }
 
-    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>> {
-        info!("Connected to peer {}, asking for identity", peer_id);
-        Some(MessageRequest::WhoAreYou)
+    fn handle_connection(&mut self, peer_id: PeerId) -> Option<MessageRequest<R>> {
+        match self.peers.entry(peer_id) {
+            Entry::Occupied(_) => {
+                // already connected
+                None
+            }
+            Entry::Vacant(entry) => {
+                info!("Connected to peer {}, asking for identity", peer_id);
+
+                entry.insert(Peer {
+                    init: None,
+                    next_work: None,
+                });
+
+                Some(MessageRequest::WhoAreYou)
+            }
+        }
     }
 
-    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W> {
+    fn handle_request(
+        &mut self,
+        peer_id: PeerId,
+        request: MessageRequest<R>,
+    ) -> MessageResponse<I, W> {
         match request {
             MessageRequest::WhoAreYou => {
                 info!("Received a request for identity from peer {}.", peer_id);
@@ -160,7 +185,9 @@ where
                 Some(MessageRequest::RequestWork)
             }
             MessageResponse::NoWorkAvailable => {
-                todo!()
+                // request work again
+                // TODO: ADD A TIMEOUT
+                Some(MessageRequest::RequestWork)
             }
             MessageResponse::SomeWork(work_definition) => {
                 trace!("Received work from peer {}", peer_id);

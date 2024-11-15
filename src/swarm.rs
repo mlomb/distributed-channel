@@ -19,8 +19,12 @@ use std::time::Duration;
 
 pub trait PeerHandler<I, W, R> {
     fn next_request(&mut self) -> impl Future<Output = Option<(PeerId, MessageRequest<R>)>>;
-    fn handle_connection(&self, peer_id: PeerId) -> Option<MessageRequest<R>>;
-    fn handle_request(&self, peer_id: PeerId, request: MessageRequest<R>) -> MessageResponse<I, W>;
+    fn handle_connection(&mut self, peer_id: PeerId) -> Option<MessageRequest<R>>;
+    fn handle_request(
+        &mut self,
+        peer_id: PeerId,
+        request: MessageRequest<R>,
+    ) -> MessageResponse<I, W>;
     fn handle_response(
         &mut self,
         peer_id: PeerId,
@@ -130,8 +134,6 @@ where
                 }
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                info!("Connected to peer {}", peer_id);
-
                 if let Some(request) = self.peer_handler.handle_connection(peer_id) {
                     self.swarm
                         .behaviour_mut()

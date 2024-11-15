@@ -2,6 +2,7 @@ use super::message::MessageRequest;
 use crate::{message::MessageResponse, swarm::PeerHandler};
 use crossbeam_channel::{Receiver, Sender};
 use libp2p::PeerId;
+use log::info;
 
 pub struct ProducerHandler<I, W, R> {
     // https://github.com/libp2p/rust-libp2p/issues/5383
@@ -27,12 +28,14 @@ where
         None
     }
 
-    fn handle_connection(&self, _peer_id: PeerId) -> Option<MessageRequest<R>> {
+    fn handle_connection(&mut self, peer_id: PeerId) -> Option<MessageRequest<R>> {
+        info!("Connected to peer {}", peer_id);
+
         None
     }
 
     fn handle_request(
-        &self,
+        &mut self,
         _peer_id: PeerId,
         request: MessageRequest<R>,
     ) -> MessageResponse<I, W> {
