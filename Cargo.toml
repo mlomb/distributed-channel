@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 crossbeam-channel = "0.5.13"
-libp2p = { version = "0.54.1", features = ["tcp", "noise", "yamux", "cbor", "mdns", "tokio", "request-response"], path = "../rust-libp2p/libp2p" }
+libp2p = { version = "0.54.1", features = ["tcp", "noise", "yamux", "cbor", "mdns", "tokio", "request-response", "relay"], path = "../rust-libp2p/libp2p" }
 serde = { version = "1.0.210", features = ["serde_derive"] }
 futures = "0.3.21"
 tokio = { version = "1.40.0", features = ["io-std", "macros", "rt-multi-thread", "sync"] }

@@ -4,6 +4,7 @@ use crate::node::NodeSetup;
 use crate::Networked;
 use futures::StreamExt;
 use libp2p::identity::Keypair;
+use libp2p::relay;
 use libp2p::request_response;
 use libp2p::swarm::DialError;
 use libp2p::swarm::SwarmEvent;
@@ -41,6 +42,8 @@ where
 {
     mdns: mdns::tokio::Behaviour,
     request_response: request_response::cbor::Behaviour<MessageRequest<R>, MessageResponse<I, W>>,
+
+    relay: relay::Behaviour,
 }
 
 pub struct SwarmLoop<I, W, R, P>
@@ -86,6 +89,10 @@ where
                             request_response::ProtocolSupport::Full,
                         )],
                         request_response::Config::default(),
+                    ),
+                    relay: relay::Behaviour::new(
+                        key.public().to_peer_id(),
+                        relay::Config::default(),
                     ),
                 })
             })
