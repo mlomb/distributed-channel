@@ -161,7 +161,7 @@ where
                 _ => error!("Outgoing connection error to peer {:?}: {}", peer_id, err),
             },
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(rr)) => match rr {
-                request_response::Event::Message { peer, message } => match message {
+                request_response::Event::Message { peer, message, .. } => match message {
                     request_response::Message::Request {
                         request, channel, ..
                     } => {
