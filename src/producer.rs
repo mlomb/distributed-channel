@@ -1,67 +1,59 @@
-use super::message::MessageRequest;
-use crate::{message::MessageResponse, swarm::PeerHandler};
-use crossbeam_channel::{Receiver, Sender};
-use libp2p::PeerId;
-use log::info;
+use crate::wire::{read_message, write_message};
+use crate::Networked;
+use iroh::protocol::{AcceptError, ProtocolHandler};
+use log::{info, trace};
 
-pub struct ProducerHandler<I, W, R> {
-    // https://github.com/libp2p/rust-libp2p/issues/5383
-    init: I,
-
-    rx: Receiver<W>,
-    tx: Sender<R>,
+#[derive(Debug, Clone)]
+pub struct ProducerProtocol<W, R> {
+    work_rx: async_channel::Receiver<W>,
+    result_tx: async_channel::Sender<R>,
 }
 
-impl<I, W, R> ProducerHandler<I, W, R> {
-    pub fn new(init: I, rx: Receiver<W>, tx: Sender<R>) -> Self {
-        Self { init, rx, tx }
-    }
-}
-
-impl<I, W, R> PeerHandler<I, W, R> for ProducerHandler<I, W, R>
+impl<W, R> ProducerProtocol<W, R>
 where
-    I: Clone,
+    W: Networked + Sync,
+    R: Networked + Sync,
 {
-    async fn next_request(&mut self) -> Option<(PeerId, MessageRequest<R>)> {
-        // sleep since we don't have any work to do
-        tokio::time::sleep(tokio::time::Duration::from_secs(69_420_666)).await;
-        None
+    pub fn new(work_rx: async_channel::Receiver<W>, result_tx: async_channel::Sender<R>) -> Self {
+        Self { work_rx, result_tx }
     }
 
-    fn handle_connection(&mut self, peer_id: PeerId) -> Option<MessageRequest<R>> {
-        info!("Connected to peer {}", peer_id);
+    async fn handle_connection(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> anyhow::Result<()> {
+        let remote = connection.remote_id();
+        info!("Consumer connected: {}", remote);
 
-        None
-    }
+        let (mut send, mut recv) = connection.open_bi().await?;
 
-    fn handle_request(
-        &mut self,
-        _peer_id: PeerId,
-        request: MessageRequest<R>,
-    ) -> MessageResponse<I, W> {
-        match request {
-            MessageRequest::WhoAreYou => MessageResponse::MeProducer(self.init.clone()),
-            MessageRequest::RequestWork => {
-                if let Ok(work) = self.rx.try_recv() {
-                    MessageResponse::SomeWork(work)
-                } else {
-                    MessageResponse::NoWorkAvailable
-                }
-            }
-            MessageRequest::RespondWork(result) => {
-                // NOTE: this operation is blocking, find a workaround
-                // the channel is unbounded so there is little risk of blocking (I think)
-                self.tx.send(result).unwrap();
-                MessageResponse::Acknowledge
-            }
+        loop {
+            let work = self.work_rx.recv().await
+                .map_err(|_| anyhow::anyhow!("work channel closed"))?;
+            write_message(&mut send, &work).await?;
+            trace!("Sent work to {}", remote);
+
+            // Read result
+            let result: R = read_message(&mut recv).await?;
+            self.result_tx.send(result).await
+                .map_err(|_| anyhow::anyhow!("result channel closed"))?;
+            trace!("Received result from {}", remote);
         }
     }
+}
 
-    fn handle_response(
-        &mut self,
-        _peer_id: PeerId,
-        _response: MessageResponse<I, W>,
-    ) -> Option<MessageRequest<R>> {
-        None
+impl<W, R> ProtocolHandler for ProducerProtocol<W, R>
+where
+    W: Networked + Sync,
+    R: Networked + Sync,
+{
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), AcceptError> {
+        if let Err(e) = self.handle_connection(connection).await {
+            info!("Consumer connection ended: {}", e);
+        }
+        Ok(())
     }
 }

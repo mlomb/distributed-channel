@@ -1,14 +1,17 @@
 [package]
 name = "distributed-channel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-crossbeam-channel = "0.5.13"
-libp2p = { version = "0.56.0", features = ["tcp", "noise", "yamux", "cbor", "mdns", "tokio", "request-response", "relay"] }
-serde = { version = "1.0.210", features = ["serde_derive"] }
-futures = "0.3.21"
-tokio = { version = "1.40.0", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
-log = "0.4.22"
-env_logger = "0.11.5"
-async-channel = "2.3.1"
+iroh = "0.97"
+n0-future = "0.1"
+postcard = { version = "1", features = ["alloc"] }
+swarm-discovery = "0.5"
+if-addrs = "0.13"
+anyhow = "1"
+serde = { version = "1", features = ["serde_derive"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync"] }
+async-channel = "2"
+log = "0.4"
+env_logger = "0.11"

@@ -1,82 +1,99 @@
-use crate::{
-    consumer::{ConsumerHandler, WorkRx},
-    producer::ProducerHandler,
-    swarm::SwarmLoop,
-    Networked,
-};
+use crate::consumer::{self, WorkRx};
+use crate::discovery;
+use crate::producer::ProducerProtocol;
+use crate::Networked;
 use tokio::runtime::Runtime;
 
 pub struct NodeSetup {
-    /// Address to listen on
-    pub listen_address: String,
-
-    /// Name of the protocol
+    /// Protocol name. Used as the ALPN identifier and mDNS service name.
     pub protocol: String,
 }
 
+/// Handle to a running node. Dropping it shuts down the runtime.
 pub struct Node {
-    /// The tokio runtime where the network loop is running.
-    /// When the `Node` is dropped, the runtime will be shut down.
     #[allow(dead_code)]
-    runtime: tokio::runtime::Runtime,
+    runtime: Runtime,
 }
 
 impl Default for NodeSetup {
     fn default() -> Self {
         NodeSetup {
-            listen_address: "/ip4/0.0.0.0/tcp/0".to_string(),
-            protocol: "/mlomb/distributed_channel/1".to_string(),
+            protocol: "distributed-channel-1".to_string(),
         }
     }
 }
 
 impl NodeSetup {
-    pub fn into_consumer<I, W, R>(self) -> (Node, WorkRx<I, W, R>)
+    fn alpn(&self) -> Vec<u8> {
+        self.protocol.as_bytes().to_vec()
+    }
+
+    fn service_name(&self) -> String {
+        self.protocol
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+            .collect()
+    }
+
+    pub fn into_consumer<W, R>(self) -> (Node, WorkRx<W, R>)
     where
-        I: Networked,
-        W: Networked,
-        R: Networked,
+        W: Networked + Sync,
+        R: Networked + Sync,
     {
         let runtime = Runtime::new().expect("tokio to initialize");
-
-        // this channel is bounded to 1 so that we don't reserve too many work items and starve other consumers
         let (work_tx, work_rx) = async_channel::bounded(1);
+        let alpn = self.alpn();
+        let service_name = self.service_name();
 
-        // start network loop
-        runtime.spawn(SwarmLoop::<I, W, R, ConsumerHandler<I, W, R>>::start(
-            self,
-            ConsumerHandler::new(work_tx.clone()),
-        ));
+        runtime.spawn(async move {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                .bind().await.expect("bind endpoint");
+
+            if let Err(e) = consumer::run_consumer_loop::<W, R>(endpoint, alpn, service_name, work_tx).await {
+                log::error!("Consumer loop failed: {}", e);
+            }
+        });
 
         (Node { runtime }, work_rx)
     }
 
-    pub fn into_producer<I, W, R>(
-        self,
-        init: I,
-    ) -> (
-        Node,
-        crossbeam_channel::Sender<W>,
-        crossbeam_channel::Receiver<R>,
-    )
+    pub fn into_producer<W, R>(self) -> (Node, async_channel::Sender<W>, async_channel::Receiver<R>)
     where
-        I: Networked,
-        W: Networked,
-        R: Networked,
+        W: Networked + Sync,
+        R: Networked + Sync,
     {
         let runtime = Runtime::new().expect("tokio to initialize");
+        let (work_tx, work_rx) = async_channel::bounded::<W>(1);
+        let (result_tx, result_rx) = async_channel::unbounded::<R>();
+        let alpn = self.alpn();
+        let service_name = self.service_name();
+        let handler = ProducerProtocol::new(work_rx, result_tx);
 
-        // this channel is bounded to 1 so that when we consume a work item, we know we are sending it
-        let (s, r) = crossbeam_channel::bounded::<W>(1);
-        // this channel is unbounded so that the producer loop can send results without blocking
-        let (u, v) = crossbeam_channel::unbounded::<R>();
+        runtime.spawn(async move {
+            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+                .alpns(vec![alpn.clone()])
+                .bind().await.expect("bind endpoint");
 
-        // start network loop
-        runtime.spawn(SwarmLoop::<I, W, R, ProducerHandler<I, W, R>>::start(
-            self,
-            ProducerHandler::new(init.clone(), r.clone(), u.clone()),
-        ));
+            let port = endpoint.bound_sockets().first()
+                .map(|s| s.port()).expect("at least one bound socket");
+            log::info!("Producer endpoint: {} on port {}", endpoint.id(), port);
 
-        (Node { runtime }, s, v)
+            let router = iroh::protocol::Router::builder(endpoint.clone())
+                .accept(alpn.clone(), handler)
+                .spawn();
+
+            // Broadcast presence via mDNS
+            let handle = tokio::runtime::Handle::current();
+            let (_rx, _mdns_guard) = discovery::start_discovery(
+                service_name, endpoint.id(), Some(port), &handle,
+            ).expect("start mDNS discovery");
+
+            // Keep the router and mDNS guard alive indefinitely.
+            // When Node is dropped, the runtime shuts down, cleaning up everything.
+            let _router = router;
+            std::future::pending::<()>().await;
+        });
+
+        (Node { runtime }, work_tx, result_rx)
     }
 }
