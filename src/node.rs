@@ -67,7 +67,7 @@ impl NodeSetup {
         let (result_tx, result_rx) = async_channel::unbounded::<R>();
         let alpn = self.alpn();
         let service_name = self.service_name();
-        let handler = ProducerProtocol::new(work_rx, result_tx);
+        let handler = ProducerProtocol::new(work_rx, work_tx.clone(), result_tx);
 
         runtime.spawn(async move {
             let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)

@@ -1,11 +1,12 @@
 use crate::wire::{read_message, write_message};
 use crate::Networked;
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use log::{info, trace};
+use log::{info, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct ProducerProtocol<W, R> {
     work_rx: async_channel::Receiver<W>,
+    work_tx: async_channel::Sender<W>,
     result_tx: async_channel::Sender<R>,
 }
 
@@ -14,8 +15,12 @@ where
     W: Networked + Sync,
     R: Networked + Sync,
 {
-    pub fn new(work_rx: async_channel::Receiver<W>, result_tx: async_channel::Sender<R>) -> Self {
-        Self { work_rx, result_tx }
+    pub fn new(
+        work_rx: async_channel::Receiver<W>,
+        work_tx: async_channel::Sender<W>,
+        result_tx: async_channel::Sender<R>,
+    ) -> Self {
+        Self { work_rx, work_tx, result_tx }
     }
 
     async fn handle_connection(
@@ -30,14 +35,25 @@ where
         loop {
             let work = self.work_rx.recv().await
                 .map_err(|_| anyhow::anyhow!("work channel closed"))?;
-            write_message(&mut send, &work).await?;
+
+            if let Err(e) = write_message(&mut send, &work).await {
+                // Re-queue work so it isn't lost to a failed connection
+                let _ = self.work_tx.send(work).await;
+                return Err(e);
+            }
             trace!("Sent work to {}", remote);
 
-            // Read result
-            let result: R = read_message(&mut recv).await?;
-            self.result_tx.send(result).await
-                .map_err(|_| anyhow::anyhow!("result channel closed"))?;
-            trace!("Received result from {}", remote);
+            match read_message::<R>(&mut recv).await {
+                Ok(result) => {
+                    self.result_tx.send(result).await
+                        .map_err(|_| anyhow::anyhow!("result channel closed"))?;
+                    trace!("Received result from {}", remote);
+                }
+                Err(e) => {
+                    warn!("Lost result from {}: {} (work item consumed)", remote, e);
+                    return Err(e);
+                }
+            }
         }
     }
 }

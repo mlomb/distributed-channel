@@ -80,13 +80,11 @@ pub fn start_discovery(
     }
 
     let own_id = endpoint_id;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<EndpointId>::new()));
     builder = builder.with_callback(move |_peer_id_str, peer| {
-        // Extract the full endpoint ID from TXT attributes
         let full_hex: String = match peer.txt_attribute("eid") {
             Some(Some(hex)) => hex.to_string(),
-            _ => {
-                return;
-            }
+            _ => return,
         };
 
         let endpoint_id = match decode_peer_id(&full_hex) {
@@ -109,6 +107,10 @@ pub fn start_discovery(
 
         if addrs.is_empty() {
             trace!("Peer {} disappeared", endpoint_id);
+            return;
+        }
+
+        if !seen.lock().unwrap().insert(endpoint_id) {
             return;
         }
 
