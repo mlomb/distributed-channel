@@ -4,14 +4,13 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-iroh = "0.97"
-n0-future = "0.1"
 postcard = { version = "1", features = ["alloc"] }
 swarm-discovery = "0.5"
 if-addrs = "0.13"
 anyhow = "1"
 serde = { version = "1", features = ["serde_derive"] }
-tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "net"] }
 async-channel = "2"
 log = "0.4"
 env_logger = "0.11"
+rand = "0.8"

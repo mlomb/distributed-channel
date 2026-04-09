@@ -1,11 +1,12 @@
 use crate::consumer::{self, WorkRx};
 use crate::discovery;
-use crate::producer::ProducerProtocol;
+use crate::producer;
 use crate::Networked;
+use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 
 pub struct NodeSetup {
-    /// Protocol name. Used as the ALPN identifier and mDNS service name.
+    /// Protocol name. Used as the mDNS service name.
     pub protocol: String,
 }
 
@@ -23,11 +24,13 @@ impl Default for NodeSetup {
     }
 }
 
-impl NodeSetup {
-    fn alpn(&self) -> Vec<u8> {
-        self.protocol.as_bytes().to_vec()
-    }
+fn random_peer_id() -> String {
+    use rand::Rng;
+    let bytes: [u8; 8] = rand::thread_rng().gen();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
 
+impl NodeSetup {
     fn service_name(&self) -> String {
         self.protocol
             .chars()
@@ -42,14 +45,11 @@ impl NodeSetup {
     {
         let runtime = Runtime::new().expect("tokio to initialize");
         let (work_tx, work_rx) = async_channel::bounded(1);
-        let alpn = self.alpn();
         let service_name = self.service_name();
+        let peer_id = random_peer_id();
 
         runtime.spawn(async move {
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-                .bind().await.expect("bind endpoint");
-
-            if let Err(e) = consumer::run_consumer_loop::<W, R>(endpoint, alpn, service_name, work_tx).await {
+            if let Err(e) = consumer::run_consumer_loop::<W, R>(service_name, peer_id, work_tx).await {
                 log::error!("Consumer loop failed: {}", e);
             }
         });
@@ -65,33 +65,21 @@ impl NodeSetup {
         let runtime = Runtime::new().expect("tokio to initialize");
         let (work_tx, work_rx) = async_channel::bounded::<W>(1);
         let (result_tx, result_rx) = async_channel::unbounded::<R>();
-        let alpn = self.alpn();
         let service_name = self.service_name();
-        let handler = ProducerProtocol::new(work_rx, work_tx.clone(), result_tx);
+        let peer_id = random_peer_id();
 
+        let internal_work_tx = work_tx.clone();
         runtime.spawn(async move {
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-                .alpns(vec![alpn.clone()])
-                .bind().await.expect("bind endpoint");
+            let listener = TcpListener::bind("0.0.0.0:0").await.expect("bind TCP listener");
+            let port = listener.local_addr().expect("local addr").port();
+            log::info!("Producer listening on port {}", port);
 
-            let port = endpoint.bound_sockets().first()
-                .map(|s| s.port()).expect("at least one bound socket");
-            log::info!("Producer endpoint: {} on port {}", endpoint.id(), port);
-
-            let router = iroh::protocol::Router::builder(endpoint.clone())
-                .accept(alpn.clone(), handler)
-                .spawn();
-
-            // Broadcast presence via mDNS
             let handle = tokio::runtime::Handle::current();
             let (_rx, _mdns_guard) = discovery::start_discovery(
-                service_name, endpoint.id(), Some(port), &handle,
+                service_name, peer_id, Some(port), &handle,
             ).expect("start mDNS discovery");
 
-            // Keep the router and mDNS guard alive indefinitely.
-            // When Node is dropped, the runtime shuts down, cleaning up everything.
-            let _router = router;
-            std::future::pending::<()>().await;
+            producer::run_producer_loop::<W, R>(listener, work_rx, internal_work_tx, result_tx).await;
         });
 
         (Node { runtime }, work_tx, result_rx)
